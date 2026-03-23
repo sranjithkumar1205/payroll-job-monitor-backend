@@ -16,6 +16,9 @@
    - 5.5 [DTO Layer](#55-dto-layer)
    - 5.6 [Configuration Layer](#56-configuration-layer)
 6. [API Contract](#6-api-contract)
+   - 6.1 [POST /api/jobs/trigger](#61-post-apijobstrigger)
+   - 6.2 [GET /api/jobs (Paginated)](#62-get-apijobs-paginated)
+   - 6.3 [GET /api/jobs/{id}](#63-get-apijobsid)
 7. [Request Flow — Trigger Job](#7-request-flow--trigger-job)
 8. [Async Processing Flow](#8-async-processing-flow)
 9. [Database Schema](#9-database-schema)
@@ -184,8 +187,10 @@ Runs on a background thread from the `jobTaskExecutor` pool:
 5. On `InterruptedException` → calls `markJobFailed()` and restores the interrupt flag.
 6. On any other exception → calls `markJobFailed()` with the exception message.
 
-#### `getAllJobs()` / `getJobById(id)`
-Simple repository delegation with entity-to-DTO mapping via the private `toResponse()` helper.
+#### `getAllJobs(pageable)` / `getAllJobs()` / `getJobById(id)`
+- `getAllJobs(Pageable)` — delegates to `jobExecutionRepository.findAll(Pageable)` (built into `JpaRepository`) and maps each entity to a DTO. Returns a Spring `Page<JobExecutionResponse>` containing the requested slice plus metadata (`totalElements`, `totalPages`, etc.).
+- `getAllJobs()` — original non-paginated overload; kept for internal use.
+- `getJobById(id)` — simple repository delegation with entity-to-DTO mapping via the private `toResponse()` helper.
 
 ---
 
@@ -193,11 +198,11 @@ Simple repository delegation with entity-to-DTO mapping via the private `toRespo
 
 **File:** `controller/JobController.java`
 
-| Method | Path              | Description                                |
-|--------|-------------------|--------------------------------------------|
-| POST   | `/api/jobs/trigger` | Trigger a job; accepts `multipart/form-data` |
-| GET    | `/api/jobs`         | List all job execution records             |
-| GET    | `/api/jobs/{id}`    | Get a single job by ID                     |
+| Method | Path                | Description                                          |
+|--------|---------------------|------------------------------------------------------|
+| POST   | `/api/jobs/trigger` | Trigger a job; accepts `multipart/form-data`         |
+| GET    | `/api/jobs`         | List job executions — paginated, sorted, filterable  |
+| GET    | `/api/jobs/{id}`    | Get a single job by ID                               |
 
 All endpoints return **only DTO objects**, never JPA entities directly.
 A `NoSuchElementException` from the service on `GET /api/jobs/{id}` is caught and translated to HTTP `404 Not Found`.
@@ -248,7 +253,7 @@ Placeholder configuration class. Date/time serialization format is controlled pe
 
 ## 6. API Contract
 
-### POST `/api/jobs/trigger`
+### 6.1 POST `/api/jobs/trigger`
 
 **Content-Type:** `multipart/form-data`
 
@@ -271,35 +276,80 @@ Placeholder configuration class. Date/time serialization format is controlled pe
 
 ---
 
-### GET `/api/jobs`
+### 6.2 GET `/api/jobs` (Paginated)
 
-No request parameters.
+#### Query Parameters
 
-**Response `200 OK`:**
-```json
-[
-  {
-    "id": 1,
-    "jobName": "Payroll Job",
-    "status": "COMPLETED",
-    "startTime": "2026-03-22T10:00:00",
-    "endTime": "2026-03-22T10:00:04",
-    "message": "Job completed successfully"
-  },
-  {
-    "id": 2,
-    "jobName": "Tax Job",
-    "status": "RUNNING",
-    "startTime": "2026-03-22T10:01:00",
-    "endTime": null,
-    "message": "Job started successfully"
-  }
-]
+| Parameter | Type   | Default     | Description                                                                         |
+|-----------|--------|-------------|--------------------------------------------------------------------------------------|
+| `page`    | int    | `0`         | Zero-based page index                                                                |
+| `size`    | int    | `10`        | Number of records per page                                                           |
+| `sortBy`  | String | `startTime` | Field name to sort by (`id`, `jobName`, `startTime`, `endTime`, `status`, `message`) |
+| `sortDir` | String | `desc`      | Sort direction: `asc` or `desc`                                                      |
+
+#### Example Requests
+
 ```
+GET /api/jobs                              → page 0, 10 items, sorted by startTime desc
+GET /api/jobs?page=1&size=5               → page 2 (zero-based), 5 items per page
+GET /api/jobs?sortBy=jobName&sortDir=asc  → sorted alphabetically by job name
+GET /api/jobs?page=0&size=20&sortBy=id    → first 20 records sorted by ID descending
+```
+
+#### Response `200 OK` — with data
+
+```json
+{
+  "content": [
+    {
+      "id": 2,
+      "jobName": "Tax Job",
+      "status": "RUNNING",
+      "startTime": "2026-03-22T10:01:00",
+      "endTime": null,
+      "message": "Job started successfully"
+    },
+    {
+      "id": 1,
+      "jobName": "Payroll Job",
+      "status": "COMPLETED",
+      "startTime": "2026-03-22T10:00:00",
+      "endTime": "2026-03-22T10:00:04",
+      "message": "Job completed successfully"
+    }
+  ],
+  "totalElements": 2,
+  "totalPages": 1,
+  "number": 0,
+  "size": 10,
+  "first": true,
+  "last": true,
+  "empty": false
+}
+```
+
+#### Response `200 OK` — no data (empty database)
+
+When there are no job records, the API still returns `200 OK` with an empty page — **never a 404 or error**.
+
+```json
+{
+  "content": [],
+  "totalElements": 0,
+  "totalPages": 0,
+  "number": 0,
+  "size": 10,
+  "first": true,
+  "last": true,
+  "empty": true
+}
+```
+
+Frontends should check `empty: true` or `totalElements === 0` to display a "No jobs found" state.
 
 ---
 
-### GET `/api/jobs/{id}`
+### 6.3 GET `/api/jobs/{id}`
 
 | Path Variable | Type | Description        |
 |---------------|------|--------------------|
@@ -471,7 +521,8 @@ This permits the Angular development server to call all `/api/` endpoints withou
 | Scenario                          | HTTP Status | Response body              |
 |-----------------------------------|-------------|----------------------------|
 | Job triggered successfully        | 200 OK      | `JobExecutionResponse` DTO |
-| All jobs listed                   | 200 OK      | Array of DTOs              |
+| All jobs listed (with data)        | 200 OK      | Paginated `Page<JobExecutionResponse>` — `empty: false`                    |
+| All jobs listed (no data)          | 200 OK      | Paginated `Page<JobExecutionResponse>` — `empty: true`, `totalElements: 0` |
 | Job found by ID                   | 200 OK      | `JobExecutionResponse` DTO |
 | Job not found (`GET /api/jobs/{id}`) | 404 Not Found | Empty body              |
 | Background job fails              | — (no HTTP) | DB record updated: `status=FAILED`, `message` contains error details |
@@ -508,8 +559,14 @@ curl -X POST http://localhost:8080/api/jobs/trigger \
      -F "jobName=Payroll Job" \
      -F "file=@/path/to/payroll.csv"
 
-# Get all jobs
+# Get all jobs (defaults: page 0, size 10, sorted by startTime desc)
 curl http://localhost:8080/api/jobs
+
+# Get page 2 with 5 items per page
+curl "http://localhost:8080/api/jobs?page=1&size=5"
+
+# Sort by jobName ascending
+curl "http://localhost:8080/api/jobs?sortBy=jobName&sortDir=asc"
 
 # Get job by ID
 curl http://localhost:8080/api/jobs/1

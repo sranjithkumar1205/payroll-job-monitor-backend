@@ -10,6 +10,9 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -134,6 +137,10 @@ public class JobExecutionService {
         .stream()
         .map(this::toResponse) // convert each entity to a response DTO
         .collect(Collectors.toList());
+  }
+
+  public Page<JobExecutionResponse> getAllJobs(Pageable pageable) {
+    return jobExecutionRepository.findAll(pageable).map(this::toResponse);
   }
 
   /**

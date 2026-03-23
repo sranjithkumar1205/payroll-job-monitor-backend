@@ -3,6 +3,9 @@ package com.example.payroll_job_monitor_backend.controller;
 import com.example.payroll_job_monitor_backend.dto.JobExecutionResponse;
 import com.example.payroll_job_monitor_backend.service.JobExecutionService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -52,8 +55,14 @@ public class JobController {
    * @return 200 OK with a list of all job executions (may be empty)
    */
   @GetMapping
-  public ResponseEntity<List<JobExecutionResponse>> getAllJobs() {
-    return ResponseEntity.ok(jobExecutionService.getAllJobs());
+  public ResponseEntity<Page<JobExecutionResponse>> getAllJobs(
+      @RequestParam(defaultValue = "0") int page,
+      @RequestParam(defaultValue = "10") int size,
+      @RequestParam(defaultValue = "startTime") String sortBy,
+      @RequestParam(defaultValue = "desc") String sortDir) {
+    Sort sort = sortDir.equalsIgnoreCase("asc") ? Sort.by(sortBy).ascending() : Sort.by(sortBy).descending();
+    PageRequest pageable = PageRequest.of(page, size, sort);
+    return ResponseEntity.ok(jobExecutionService.getAllJobs(pageable));
   }
 
   /**
