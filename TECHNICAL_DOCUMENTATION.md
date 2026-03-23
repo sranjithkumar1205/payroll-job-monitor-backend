@@ -8,19 +8,23 @@
 2. [Technology Stack](#2-technology-stack)
 3. [Project Structure](#3-project-structure)
 4. [Architecture Overview](#4-architecture-overview)
-5. [Layered Architecture Detail](#5-layered-architecture-detail)
-   - 5.1 [Entity Layer](#51-entity-layer)
-   - 5.2 [Repository Layer](#52-repository-layer)
-   - 5.3 [Service Layer](#53-service-layer)
-   - 5.4 [Controller Layer](#54-controller-layer)
-   - 5.5 [DTO Layer](#55-dto-layer)
-   - 5.6 [Configuration Layer](#56-configuration-layer)
-6. [API Contract](#6-api-contract)
-   - 6.1 [POST /api/jobs/trigger](#61-post-apijobstrigger)
-   - 6.2 [GET /api/jobs (Paginated)](#62-get-apijobs-paginated)
-   - 6.3 [GET /api/jobs/{id}](#63-get-apijobsid)
-7. [Request Flow — Trigger Job](#7-request-flow--trigger-job)
-8. [Async Processing Flow](#8-async-processing-flow)
+5. [Application Startup Sequence](#5-application-startup-sequence)
+6. [Layered Architecture Detail](#6-layered-architecture-detail)
+   - 6.1 [Entity Layer](#61-entity-layer)
+   - 6.2 [Repository Layer](#62-repository-layer)
+   - 6.3 [Service Layer](#63-service-layer)
+   - 6.4 [Controller Layer](#64-controller-layer)
+   - 6.5 [DTO Layer](#65-dto-layer)
+   - 6.6 [Configuration Layer](#66-configuration-layer)
+7. [End-to-End Flow Diagrams](#7-end-to-end-flow-diagrams)
+   - 7.1 [Full Application Lifecycle](#71-full-application-lifecycle)
+   - 7.2 [Trigger Job Flow](#72-trigger-job-flow)
+   - 7.3 [Async Processing Flow](#73-async-processing-flow)
+   - 7.4 [Poll / Read Flow](#74-poll--read-flow)
+8. [API Contract](#8-api-contract)
+   - 8.1 [POST /api/jobs/trigger](#81-post-apijobstrigger)
+   - 8.2 [GET /api/jobs (Paginated)](#82-get-apijobs-paginated)
+   - 8.3 [GET /api/jobs/{id}](#83-get-apijobsid)
 9. [Database Schema](#9-database-schema)
 10. [Configuration Reference](#10-configuration-reference)
 11. [CORS Policy](#11-cors-policy)
@@ -90,41 +94,96 @@ payroll-job-monitor-backend/
 ## 4. Architecture Overview
 
 ```
-┌─────────────────────────────────────────────┐
-│            Angular Frontend (port 4200)      │
-└────────────────────┬────────────────────────┘
-                     │ HTTP / multipart/form-data
-                     ▼
-┌─────────────────────────────────────────────┐
-│         Spring Boot Backend (port 8080)      │
-│                                             │
-│  ┌────────────┐    ┌──────────────────────┐ │
-│  │ JobController│──▶│ JobExecutionService  │ │
-│  │  (REST API) │   │  (Business Logic)    │ │
-│  └────────────┘   └──────────┬───────────┘ │
-│                              │              │
-│                   ┌──────────▼───────────┐  │
-│                   │JobExecutionRepository│  │
-│                   │   (Spring Data JPA)  │  │
-│                   └──────────┬───────────┘  │
-│                              │              │
-│                   ┌──────────▼───────────┐  │
-│                   │   H2 In-Memory DB    │  │
-│                   │  (job_execution tbl) │  │
-│                   └──────────────────────┘  │
-│                                             │
-│  ┌───────────────────────────────────────┐  │
-│  │  Async Thread Pool (JobThread-1..N)   │  │
-│  │  Processes job in background          │  │
-│  └───────────────────────────────────────┘  │
-└─────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                  Angular Frontend (port 4200)                    │
+│        (Triggers jobs, polls status, displays results)          │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │ HTTP / multipart/form-data
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                  Spring Boot Backend (port 8080)                 │
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │                   HTTP Layer (CorsConfig)                │   │
+│  │          Allows requests from http://localhost:4200      │   │
+│  └──────────────────────────┬──────────────────────────────┘   │
+│                             │                                   │
+│  ┌──────────────────────────▼──────────────────────────────┐   │
+│  │                 JobController  /api/jobs                 │   │
+│  │   POST /trigger  │  GET /       │  GET /{id}             │   │
+│  └──────────────────────────┬──────────────────────────────┘   │
+│                             │                                   │
+│  ┌──────────────────────────▼──────────────────────────────┐   │
+│  │               JobExecutionService (Business Logic)       │   │
+│  │    triggerJob()  │  getAllJobs()  │  getJobById()         │   │
+│  │         │               │               │                │   │
+│  │         ▼               │               │                │   │
+│  │  processJobAsync()      │               │                │   │
+│  │  (@Async — background)  │               │                │   │
+│  └──────────┬──────────────┴───────────────┘                │   │
+│             │                                               │   │
+│  ┌──────────▼──────────────────────────────────────────┐   │   │
+│  │            JobExecutionRepository (Spring Data JPA)  │   │   │
+│  │       save() │ findById() │ findAll(Pageable)         │   │   │
+│  └──────────────────────────┬────────────────────────────┘   │   │
+│                             │                                   │
+│  ┌──────────────────────────▼──────────────────────────────┐   │
+│  │                H2 In-Memory Database                     │   │
+│  │             Table: job_execution                         │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │            Async Thread Pool (AsyncConfig)               │   │
+│  │    JobThread-1 … JobThread-10  |  Queue: up to 25 tasks  │   │
+│  └─────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 5. Layered Architecture Detail
+## 5. Application Startup Sequence
 
-### 5.1 Entity Layer
+When the Spring Boot application starts, the following events occur in order:
+
+```
+JVM starts
+     │
+     ▼
+Spring Boot auto-configuration
+     │  ─ Loads application.properties
+     │  ─ Configures H2 DataSource (in-memory, jdbc:h2:mem:payrolldb)
+     │  ─ Creates JPA EntityManagerFactory
+     │  ─ Runs Hibernate DDL: CREATE TABLE job_execution (...)
+     │  ─ Initializes Bean: JobExecutionRepository
+     │  ─ Initializes Bean: JobExecutionService
+     │  ─ Initializes Bean: JobController
+     │  ─ Initializes Bean: AsyncConfig → creates jobTaskExecutor thread pool
+     │                         (5 core threads, max 10, queue 25)
+     │  ─ Initializes Bean: CorsConfig  → registers CORS rules
+     │
+     ▼
+CommandLineRunner.run() → DataInitializer.run()
+     │
+     │  Inserts 4 sample records into job_execution:
+     │    1. "Payroll Processing - January"   → COMPLETED  (3 hrs ago)
+     │    2. "Payroll Processing - February"  → COMPLETED  (2 hrs ago)
+     │    3. "Tax Report Generation"          → FAILED     (45 min ago)
+     │    4. "Payroll Processing - March"     → RUNNING    (5 min ago)
+     │
+     ▼
+Embedded Tomcat starts on port 8080
+     │
+     ▼
+Application ready — HTTP requests accepted
+```
+
+> **Note:** The database uses `ddl-auto=create-drop`, meaning all schema and data are recreated fresh on every startup and permanently lost on shutdown.
+
+---
+
+## 6. Layered Architecture Detail
+
+### 6.1 Entity Layer
 
 **File:** `entity/JobExecution.java`
 
@@ -147,9 +206,27 @@ COMPLETED → Job finished successfully
 FAILED    → Job encountered an error
 ```
 
+Status transitions:
+
+```
+              ┌─────────┐
+   trigger()  │         │
+ ────────────▶│ RUNNING │
+              │         │
+              └────┬────┘
+                   │
+       ┌───────────┴───────────┐
+       │                       │
+       ▼                       ▼
+  ┌─────────┐            ┌────────┐
+  │COMPLETED│            │ FAILED │
+  └─────────┘            └────────┘
+  (success path)        (error/interrupt)
+```
+
 ---
 
-### 5.2 Repository Layer
+### 6.2 Repository Layer
 
 **File:** `repository/JobExecutionRepository.java`
 
@@ -165,7 +242,7 @@ No custom queries are needed for the current feature set.
 
 ---
 
-### 5.3 Service Layer
+### 6.3 Service Layer
 
 **File:** `service/JobExecutionService.java`
 
@@ -192,9 +269,15 @@ Runs on a background thread from the `jobTaskExecutor` pool:
 - `getAllJobs()` — original non-paginated overload; kept for internal use.
 - `getJobById(id)` — simple repository delegation with entity-to-DTO mapping via the private `toResponse()` helper.
 
+#### Private helper: `toResponse(JobExecution)`
+Converts a `JobExecution` JPA entity into a `JobExecutionResponse` DTO. This ensures the HTTP response shape is never coupled to the database model.
+
+#### Private helper: `markJobFailed(jobId, errorMessage)`
+Called from the catch blocks of `processJobAsync()`. Re-fetches the entity and persists `status=FAILED`, `endTime=now()`, and the error message.
+
 ---
 
-### 5.4 Controller Layer
+### 6.4 Controller Layer
 
 **File:** `controller/JobController.java`
 
@@ -209,7 +292,7 @@ A `NoSuchElementException` from the service on `GET /api/jobs/{id}` is caught an
 
 ---
 
-### 5.5 DTO Layer
+### 6.5 DTO Layer
 
 **File:** `dto/JobExecutionResponse.java`
 
@@ -230,7 +313,7 @@ This is the single response shape returned to the Angular frontend for all three
 
 ---
 
-### 5.6 Configuration Layer
+### 6.6 Configuration Layer
 
 #### `AsyncConfig.java`
 - Annotated with `@EnableAsync` to activate Spring's async execution infrastructure.
@@ -251,9 +334,155 @@ Placeholder configuration class. Date/time serialization format is controlled pe
 
 ---
 
-## 6. API Contract
+## 7. End-to-End Flow Diagrams
 
-### 6.1 POST `/api/jobs/trigger`
+### 7.1 Full Application Lifecycle
+
+```
+  ┌───────────────────────────────────────────────────────────────────────┐
+  │  STARTUP                                                              │
+  │  Spring Boot starts → Hibernate creates schema → DataInitializer      │
+  │  seeds 4 records (2 COMPLETED, 1 FAILED, 1 RUNNING)                  │
+  └──────────────────────────────────┬────────────────────────────────────┘
+                                     │
+                                     ▼
+  ┌───────────────────────────────────────────────────────────────────────┐
+  │  IDLE  — Server listens on :8080, thread pool is ready               │
+  └──────────────────────────────────┬────────────────────────────────────┘
+                                     │
+              ┌──────────────────────┼──────────────────────┐
+              │                      │                      │
+              ▼                      ▼                      ▼
+  POST /api/jobs/trigger    GET /api/jobs             GET /api/jobs/{id}
+  (triggers new job)        (poll all statuses)       (poll one status)
+              │                      │                      │
+              ▼                      │                      │
+  job saved: RUNNING                 │                      │
+  async task dispatched              │                      │
+              │                      │                      │
+              ▼                      ▼                      ▼
+  [JobThread-N] processes       DB read →             DB read by id →
+  3–5s, updates to              Page<DTO>             DTO or 404
+  COMPLETED / FAILED
+              │
+              ▼
+  ┌───────────────────────────────────────────────────────────────────────┐
+  │  SHUTDOWN — Hibernate drops schema, all in-memory data is lost       │
+  └───────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 7.2 Trigger Job Flow
+
+```
+Angular Frontend
+     │
+     │  POST /api/jobs/trigger
+     │  Content-Type: multipart/form-data
+     │  Body: jobName=Payroll Job, file=(optional)
+     ▼
+JobController.triggerJob()
+     │
+     └──▶ JobExecutionService.triggerJob()
+               │
+               ├─ 1. Log file name (if file present)
+               │
+               ├─ 2. Build JobExecution entity
+               │      status    = RUNNING
+               │      startTime = now()
+               │      message   = "Job started successfully"
+               │
+               ├─ 3. jobExecutionRepository.save(entity)  →  id assigned
+               │
+               ├─ 4. Dispatch processJobAsync(id, file)
+               │      (non-blocking; runs on JobThread-N)
+               │
+               └─ 5. toResponse(saved)  →  JobExecutionResponse DTO
+     │
+     └── HTTP 200 OK → { id, jobName, status:"RUNNING", startTime, ... }
+```
+
+---
+
+### 7.3 Async Processing Flow
+
+```
+JobThread-N (background — jobTaskExecutor pool)
+     │
+     ├─ Sleep random 3–5 seconds  (simulates real processing)
+     │
+     ├─ [Optional] Log simulated file processing
+     │
+     ├─ jobExecutionRepository.findById(jobId)
+     │      (re-fetch avoids stale state from the triggering thread)
+     │
+     ├─ [SUCCESS path]
+     │     job.status   = COMPLETED
+     │     job.endTime  = now()
+     │     job.message  = "Job completed successfully"
+     │     jobExecutionRepository.save(job)
+     │     log.info("Job id={} completed successfully")
+     │
+     ├─ [InterruptedException]
+     │     Thread.currentThread().interrupt()   ← restore interrupt flag
+     │     markJobFailed(jobId, "Job interrupted: <reason>")
+     │
+     └─ [General Exception]
+           log.error("Job id={} failed: ...")
+           markJobFailed(jobId, "Job failed: <exception message>")
+
+
+markJobFailed(jobId, errorMessage):
+     jobExecutionRepository.findById(jobId).ifPresent(job -> {
+         job.status  = FAILED
+         job.endTime = now()
+         job.message = errorMessage
+         save(job)
+     })
+```
+
+---
+
+### 7.4 Poll / Read Flow
+
+The Angular frontend polls the job list or individual records to observe status transitions:
+
+```
+Angular Frontend
+     │
+     │  GET /api/jobs?page=0&size=10&sortBy=startTime&sortDir=desc
+     ▼
+JobController.getAllJobs()
+     │
+     └──▶ JobExecutionService.getAllJobs(Pageable)
+               │
+               └──▶ jobExecutionRepository.findAll(Pageable)
+                         │
+                         └──▶ SELECT * FROM job_execution
+                              ORDER BY start_time DESC
+                              LIMIT 10 OFFSET 0
+                         │
+                         ▼
+               Page<JobExecution>  →  .map(toResponse)  →  Page<JobExecutionResponse>
+     │
+     └── HTTP 200 OK → { content:[...], totalElements, totalPages, ... }
+
+
+For a single record:
+
+     GET /api/jobs/{id}
+     └──▶ service.getJobById(id)
+               └──▶ findById(id).orElseThrow(NoSuchElementException)
+                         found   → 200 OK with DTO
+                         missing → NoSuchElementException → 404 Not Found
+```
+
+---
+
+## 8. API Contract
+
+### 8.1 POST `/api/jobs/trigger`
 
 **Content-Type:** `multipart/form-data`
 
@@ -276,7 +505,7 @@ Placeholder configuration class. Date/time serialization format is controlled pe
 
 ---
 
-### 6.2 GET `/api/jobs` (Paginated)
+### 8.2 GET `/api/jobs` (Paginated)
 
 #### Query Parameters
 
@@ -349,7 +578,7 @@ Frontends should check `empty: true` or `totalElements === 0` to display a "No j
 
 ---
 
-### 6.3 GET `/api/jobs/{id}`
+### 8.3 GET `/api/jobs/{id}`
 
 | Path Variable | Type | Description        |
 |---------------|------|--------------------|
@@ -368,73 +597,6 @@ Frontends should check `empty: true` or `totalElements === 0` to display a "No j
 ```
 
 **Response `404 Not Found`:** when the given `id` does not exist.
-
----
-
-## 7. Request Flow — Trigger Job
-
-```
-Angular Frontend
-     │
-     │  POST /api/jobs/trigger
-     │  Content-Type: multipart/form-data
-     │  Body: jobName=Payroll Job, file=(optional)
-     ▼
-JobController.triggerJob()
-     │
-     ├─ Delegates to ──▶ JobExecutionService.triggerJob()
-     │                        │
-     │                        ├─ 1. Log file name (if file present)
-     │                        │
-     │                        ├─ 2. Build JobExecution entity
-     │                        │      status    = RUNNING
-     │                        │      startTime = now()
-     │                        │      message   = "Job started successfully"
-     │                        │
-     │                        ├─ 3. Save to H2 DB  →  id assigned
-     │                        │
-     │                        ├─ 4. Dispatch processJobAsync(id, file)
-     │                        │      (returns immediately, runs on JobThread-N)
-     │                        │
-     │                        └─ 5. Map entity → JobExecutionResponse DTO
-     │
-     └─ Return HTTP 200 with JobExecutionResponse (status=RUNNING)
-```
-
----
-
-## 8. Async Processing Flow
-
-```
-JobThread-N (background)
-     │
-     ├─ Sleep 3–5 seconds (simulated processing)
-     │
-     ├─ If file present → log simulated file processing
-     │
-     ├─ Re-fetch JobExecution from DB by id
-     │
-     ├─ [SUCCESS path]
-     │     status   = COMPLETED
-     │     endTime  = now()
-     │     message  = "Job completed successfully"
-     │     Save to DB
-     │
-     ├─ [InterruptedException path]
-     │     Restore interrupt flag
-     │     status   = FAILED
-     │     endTime  = now()
-     │     message  = "Job interrupted: <reason>"
-     │     Save to DB
-     │
-     └─ [General Exception path]
-           status   = FAILED
-           endTime  = now()
-           message  = "Job failed: <exception message>"
-           Save to DB
-```
-
-> The frontend dashboard can poll `GET /api/jobs` or `GET /api/jobs/{id}` to observe RUNNING → COMPLETED/FAILED transitions.
 
 ---
 
