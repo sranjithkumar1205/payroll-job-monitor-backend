@@ -3,9 +3,12 @@ package com.example.payroll_job_monitor_backend.service;
 import com.example.payroll_job_monitor_backend.dto.JobExecutionResponse;
 import com.example.payroll_job_monitor_backend.entity.JobExecution;
 import com.example.payroll_job_monitor_backend.entity.JobStatus;
+import com.example.payroll_job_monitor_backend.exception.BadRequestException;
 import com.example.payroll_job_monitor_backend.repository.JobExecutionRepository;
+import com.example.payroll_job_monitor_backend.specification.JobSpecification;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
@@ -14,6 +17,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 
 import java.time.LocalDateTime;
+import java.util.Arrays;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Random;
@@ -139,8 +143,45 @@ public class JobExecutionService {
         .collect(Collectors.toList());
   }
 
+  /**
+   * Returns a filtered, paginated page of job executions.
+   *
+   * <p>
+   * Filtering rules:
+   * <ul>
+   * <li>jobName – case-insensitive {@code LIKE} match; ignored when
+   * null/blank.</li>
+   * <li>statusStr – exact enum match; ignored when null/blank;
+   * throws {@link BadRequestException} for unrecognised values.</li>
+   * </ul>
+   *
+   * @param jobName   partial name to search (optional)
+   * @param statusStr raw status string to filter by (optional)
+   * @param pageable  pagination + sorting configuration
+   * @return paginated, filtered result
+   */
+  public Page<JobExecutionResponse> getAllJobs(String jobName, String statusStr, Pageable pageable) {
+    String trimmedName = (jobName != null && !jobName.isBlank()) ? jobName.trim() : null;
+
+    JobStatus statusEnum = null;
+    if (statusStr != null && !statusStr.isBlank()) {
+      try {
+        statusEnum = JobStatus.valueOf(statusStr.trim().toUpperCase());
+      } catch (IllegalArgumentException e) {
+        String allowed = Arrays.stream(JobStatus.values())
+            .map(Enum::name)
+            .collect(Collectors.joining(", "));
+        throw new BadRequestException("Invalid status value. Allowed values: " + allowed);
+      }
+    }
+
+    Specification<JobExecution> spec = JobSpecification.withFilters(trimmedName, statusEnum);
+    return jobExecutionRepository.findAll(spec, pageable).map(this::toResponse);
+  }
+
+  /** Backward-compatible overload that applies no filters. */
   public Page<JobExecutionResponse> getAllJobs(Pageable pageable) {
-    return jobExecutionRepository.findAll(pageable).map(this::toResponse);
+    return getAllJobs(null, null, pageable);
   }
 
   /**

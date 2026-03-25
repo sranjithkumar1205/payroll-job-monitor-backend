@@ -50,19 +50,41 @@ public class JobController {
 
   /**
    * GET /api/jobs
-   * Retrieves all job execution records from the database.
+   * Returns a paginated, optionally filtered list of job executions.
    *
-   * @return 200 OK with a list of all job executions (may be empty)
+   * <p>
+   * Optional query parameters:
+   * <ul>
+   * <li>{@code jobName} – partial, case-insensitive match against the job
+   * name.</li>
+   * <li>{@code status} – exact match against the {@code JobStatus} enum
+   * (RUNNING, COMPLETED, FAILED). Returns HTTP 400 for invalid values.</li>
+   * </ul>
+   *
+   * <p>
+   * Example:
+   * {@code GET /api/jobs?page=0&size=10&sortBy=startTime&sortDir=desc&jobName=payroll&status=COMPLETED}
+   *
+   * @param page    zero-based page index (default 0)
+   * @param size    number of records per page (default 10)
+   * @param sortBy  field name to sort by (default startTime)
+   * @param sortDir sort direction – "asc" or "desc" (default desc)
+   * @param jobName optional partial job name filter (case-insensitive)
+   * @param status  optional exact status filter (RUNNING, COMPLETED, FAILED)
+   * @return 200 OK with a {@link Page} of job executions, or 400 for invalid
+   *         status
    */
   @GetMapping
   public ResponseEntity<Page<JobExecutionResponse>> getAllJobs(
       @RequestParam(defaultValue = "0") int page,
       @RequestParam(defaultValue = "10") int size,
       @RequestParam(defaultValue = "startTime") String sortBy,
-      @RequestParam(defaultValue = "desc") String sortDir) {
+      @RequestParam(defaultValue = "desc") String sortDir,
+      @RequestParam(required = false) String jobName,
+      @RequestParam(required = false) String status) {
     Sort sort = sortDir.equalsIgnoreCase("asc") ? Sort.by(sortBy).ascending() : Sort.by(sortBy).descending();
     PageRequest pageable = PageRequest.of(page, size, sort);
-    return ResponseEntity.ok(jobExecutionService.getAllJobs(pageable));
+    return ResponseEntity.ok(jobExecutionService.getAllJobs(jobName, status, pageable));
   }
 
   /**
